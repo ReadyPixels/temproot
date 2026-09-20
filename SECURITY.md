@@ -35,6 +35,13 @@ These are trade-offs, not oversights. Know them before you hand a bundle to some
   trust, and delete it when the session ends.
 - **sudo is passwordless.** The recipient runs `sudo -i` and is root. There's no second
   factor beyond the SSH credential.
+- **Cleanup isn't tamper-proof against the account itself.** The `at` job, cron sweeper, and
+  sudoers drop-in all live inside the same root access the temp account holds. Anyone holding
+  it removes the crontab line, cancels the `at` job, or edits the lock date directly. Nothing
+  here defends against a malicious holder undoing their own expiry, real root always lets
+  someone undo local safeguards written with root. What it does defend against is the more
+  common failure: you hand out root for a job and forget to revoke it once the work's done.
+  Cleanup runs on its own timer whether or not anyone remembers to check.
 - **Password login over SSH works** for the account unless your `sshd_config` already
   disables it. If you want key-only access, set `PasswordAuthentication no` on the server.
 - **The optional zip uses classic zip encryption**, which is weak. Prefer the `.tar.gz`
