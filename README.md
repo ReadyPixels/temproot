@@ -8,7 +8,7 @@
 ![Platform](https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black)
 ![Runs as](https://img.shields.io/badge/runs%20as-root-critical)
 ![Expiry](https://img.shields.io/badge/expiry-1%20to%20720h-blue)
-![Cleanup](https://img.shields.io/badge/cleanup-at%20%2B%20cron%20sweeper-8A2BE2)
+![Cleanup](https://img.shields.io/badge/cleanup-at%20%2B%20cron%20%2B%20systemd%20(optional)-8A2BE2)
 ![Tested on](https://img.shields.io/badge/tested%20on-Ubuntu%2024.04%20(WSL)-E95420?logo=ubuntu&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -30,7 +30,7 @@ a weekend, or when you want a login to hand out and forget about.
 
 - 🔐 **32-character random password** and a **4096-bit RSA key** with its own passphrase
 - ⏱️ **Timed expiry** from 1 hour up to 30 days (720h), default 24h
-- 🧹 **Two-layer cleanup**: an `at` job for the exact minute, plus a cron sweeper every 5 minutes, surviving reboots and a stopped `atd`
+- 🧹 **Layered cleanup**: an `at` job for the exact minute, a cron sweeper every 5 minutes that survives reboots and a stopped `atd`, and an optional systemd timer for extra visibility on systemd hosts
 - 🛡️ **Hard lock** via `chage -E` as a last-resort safety net
 - 📦 **Download bundle**: `.tar.gz` (and password-protected `.zip` when `zip` is installed) with everything the recipient needs
 - 📄 **Self-explaining docs** inside the bundle: how to connect, how to escalate, how to terminate early
@@ -92,7 +92,7 @@ A full `--create` run, from key generation to the final summary:
 | --- | --- |
 | *(none)* | Interactive menu |
 | `--create` | Create a new account right now with the current expiry |
-| `--list` | Show active sessions and time remaining |
+| `--list` | Show active sessions, time remaining, and which layers guard each one |
 | `--downloads` | Show archive paths |
 | `--purge <user>` | Terminate a session early and wipe everything |
 | `--sweep` | Purge every expired session (this is what cron runs) |
@@ -103,18 +103,29 @@ top of the script.
 
 ## ⏳ How expiry works
 
-Three things guard each session, in this order:
+Up to four things guard each session, in this order:
 
 1. **`at` job** at the exact expiry minute, if `atd` is installed and running.
 2. **Cron sweeper** (`*/5 * * * *`) reading each session's `.meta` file and purging any
    whose expiry epoch has passed. It installs itself on first create and removes itself
    when no sessions remain. It works after a reboot and doesn't care whether `atd` exists.
-3. **Account hard lock** (`chage -E`) set to the day *after* the intended expiry. This is
+3. **systemd timer** (`temproot-<user>.timer`), created automatically when the box runs
+   systemd. It's optional and additive, not a replacement for the other layers. It exists
+   for one reason: on a systemd host you can watch it with `systemctl list-timers` or
+   `journalctl`, and it doesn't need `atd` at all. It closes no security gap `at` and cron
+   didn't already have. Anyone with root on the box can `systemctl disable` or `systemctl
+   mask` a temproot timer as easily as they can edit a crontab or delete an `at` job. See
+   [SECURITY.md](SECURITY.md) for what that means for you.
+4. **Account hard lock** (`chage -E`) set to the day *after* the intended expiry. This is
    a backstop only. `chage -E` takes a date and locks at midnight of this date, so setting
    it to the expiry date itself would cut a session short by up to 24 hours.
 
 If you only see a warning saying "only the cron sweeper is guarding this session", it's
-fine. It means `atd` isn't around. The sweeper alone is enough.
+fine. It means `atd` isn't around, and either there's no systemd or the timer failed to
+install. The sweeper alone is enough. `--list` shows you which layers are active for each
+session, and none of this requires systemd. On Alpine, BusyBox containers, and other
+non-systemd setups, temproot runs exactly as it always has: `at` plus the cron sweeper plus
+the hard lock.
 
 ## 📁 What's in the bundle
 
@@ -139,6 +150,7 @@ temproot_tadmin_xxxxxx/
 - Membership of `sudo` / `wheel`
 - The user and its home directory
 - The `at` job and the cron sweeper line (once no sessions are left)
+- The systemd timer and service unit, if one was created
 - The session folder under `/root/.temproot_sessions/`
 - Every archive for the user under `downloads/`
 

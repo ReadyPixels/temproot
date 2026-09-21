@@ -78,6 +78,46 @@ atd_running() {
     return 1
 }
 
+# Checks the running init, not just whether a systemctl binary exists — a
+# systemctl stub with no systemd behind it would pass a command -v check.
+systemd_available() {
+    [[ -d /run/systemd/system ]]
+}
+
+# Fourth, optional redundancy layer: a transient systemd timer that fires the
+# same purge command as the at job and cron sweeper. Adds list-timers/journal
+# visibility on systemd hosts; adds no security a malicious root holder
+# couldn't undo (systemctl disable/mask/stop is as easy as editing a
+# crontab). Never required — systemd_available() gates every call site.
+install_systemd_timer() {
+    local username="$1" expire_epoch="$2"
+    command -v systemd-run &>/dev/null || return 1
+    local calendar_spec
+    calendar_spec=$(date -d "@${expire_epoch}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
+                  || date -r "${expire_epoch}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null) \
+        || return 1
+    systemd-run --unit="temproot-${username}" \
+        --on-calendar="${calendar_spec}" \
+        --description="TEMPROOT scheduled purge for ${username}" \
+        --collect \
+        -- bash "${SCRIPT_PATH}" --purge "${username}" &>/dev/null
+}
+
+# Named temproot-<user>.timer/.service so this touches exactly that unit and
+# nothing else. Safe to call even when no such unit exists.
+remove_systemd_timer() {
+    local username="$1"
+    systemctl stop "temproot-${username}.timer" "temproot-${username}.service" &>/dev/null || true
+    systemctl reset-failed "temproot-${username}.service" &>/dev/null || true
+}
+
+# True if a live temproot-<user> timer unit is still registered with systemd.
+has_systemd_timer() {
+    local username="$1"
+    systemd_available || return 1
+    systemctl list-units --all --no-legend "temproot-${username}.timer" 2>/dev/null | grep -q .
+}
+
 # Install (idempotently) a single cron line that sweeps expired sessions.
 install_sweeper() {
     local line="*/5 * * * * bash '${SCRIPT_PATH}' --sweep >> /var/log/temproot_cleanup.log 2>&1 # TEMPROOT_SWEEP"
@@ -381,7 +421,7 @@ What gets deleted on termination:
   ✓ sudoers entry
   ✓ SSH authorized_keys
   ✓ All files in: ${session_dir}
-  ✓ Cron/at scheduled job
+  ✓ Cron/at/systemd scheduled job
   ✓ All downloaded archives
 TERM
     chmod 644 "${session_dir}/HOW_TO_TERMINATE.txt"
@@ -526,7 +566,16 @@ SUDOERS
     install_sweeper \
         && success "Cron sweeper active (checks every 5 min)" \
         || warn "cron sweeper install failed — run --purge manually if needed"
-    (( at_ok == 1 )) || warn "Only the cron sweeper is guarding this session"
+    local systemd_ok=0
+    if systemd_available; then
+        if install_systemd_timer "$username" "$expire_epoch"; then
+            systemd_ok=1
+            success "systemd timer active (temproot-${username}.timer) — extra redundancy, no atd needed"
+        else
+            warn "systemd timer install failed — at + cron sweeper still guard this session"
+        fi
+    fi
+    (( at_ok == 1 || systemd_ok == 1 )) || warn "Only the cron sweeper is guarding this session"
 
     # ── Generate SSH key pair ──────────────────────────────
     step "Generating RSA 4096-bit SSH key pair..."
@@ -681,9 +730,19 @@ list_sessions() {
             remaining=$(( expires - now ))
             if (( remaining > 0 )); then
                 local h=$(( remaining / 3600 )) m=$(( (remaining % 3600) / 60 ))
+                local guards="cron sweeper"
+                if command -v atq &>/dev/null; then
+                    local job
+                    for job in $(atq 2>/dev/null | awk '{print $1}'); do
+                        at -c "$job" 2>/dev/null | grep -q -- "--purge '${username}'" \
+                            && { guards="at job + ${guards}"; break; }
+                    done
+                fi
+                has_systemd_timer "$username" && guards="${guards} + systemd timer"
                 echo -e "  ${BOLD}${BCYAN}${username}${NC}  —  ${GREEN}ACTIVE${NC}"
                 echo -e "  Expires in : ${h}h ${m}m  (${expire_time})"
                 echo -e "  Server     : ${server_ip}:${ssh_port}"
+                echo -e "  Guards     : ${guards}"
             else
                 echo -e "  ${BOLD}${username}${NC}  —  ${RED}EXPIRED${NC}"
                 echo -e "  Was        : ${expire_time}"
@@ -730,6 +789,11 @@ purge_account() {
         done
     fi
 
+    step "Removing systemd timer (if any)..."
+    if systemd_available; then
+        remove_systemd_timer "$target_user"
+    fi
+
     step "Deleting session credentials folder..."
     rm -rf "${TEMPROOT_BASE}/${target_user}" 2>/dev/null || true
 
@@ -746,7 +810,7 @@ purge_account() {
     echo -e "     • SSH keys removed"
     echo -e "     • Session folder deleted"
     echo -e "     • Archives deleted"
-    echo -e "     • Cron job removed${NC}\n"
+    echo -e "     • Cron/at/systemd schedules removed${NC}\n"
 }
 
 # ── Show download paths ───────────────────────────────────────

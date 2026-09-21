@@ -15,8 +15,9 @@ to keep this safe, what it deliberately doesn't do, and what you should do on yo
   account.
 - **Random credentials.** A 32-character password from `/dev/urandom` and a 4096-bit RSA
   key with its own passphrase.
-- **Three layers of expiry.** An `at` job at the exact minute, a cron sweeper every five
-  minutes, surviving reboots, and a `chage -E` hard lock the day after as a backstop.
+- **Up to four layers of expiry.** An `at` job at the exact minute, a cron sweeper every
+  five minutes that survives reboots, an optional systemd timer on hosts that run systemd,
+  and a `chage -E` hard lock the day after as a backstop.
 - **Full wipe on purge.** Processes killed, sudoers drop-in removed, group membership
   removed, user and home deleted, session folder and archives deleted, scheduler entries
   removed.
@@ -39,13 +40,17 @@ These are trade-offs, not oversights. Know them before you hand a bundle to some
   trust, and delete it when the session ends.
 - **sudo is passwordless.** The recipient runs `sudo -i` and is root. There's no second
   factor beyond the SSH credential.
-- **Cleanup isn't tamper-proof against the account itself.** The `at` job, cron sweeper, and
-  sudoers drop-in all live inside the same root access the temp account holds. Anyone holding
-  it removes the crontab line, cancels the `at` job, or edits the lock date directly. Nothing
+- **Cleanup isn't tamper-proof against the account itself.** The `at` job, cron sweeper,
+  systemd timer, and sudoers drop-in all live inside the same root access the temp account
+  holds. Anyone holding it removes the crontab line, cancels the `at` job, disables or masks
+  the systemd timer, or edits the lock date directly. A systemd unit is no harder to undo
+  than a crontab line. `systemctl disable temproot-<user>.timer` takes one command. Nothing
   here defends against a malicious holder undoing their own expiry, real root always lets
   someone undo local safeguards written with root. What it does defend against is the more
   common failure: you hand out root for a job and forget to revoke it once the work's done.
-  Cleanup runs on its own timer whether or not anyone remembers to check.
+  Cleanup runs on its own timer whether or not anyone remembers to check, and having four
+  independent layers instead of one means a single missed cleanup step doesn't leave the
+  account behind.
 - **Command audit isn't tamper-proof either.** The `PROMPT_COMMAND` hook lives in the
   account's own `.bashrc`, which the holder can edit or clear. What's already logged is
   safe, especially once forwarded off-box, but nothing stops them silencing it partway
