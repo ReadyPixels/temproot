@@ -16,6 +16,10 @@ BGREEN='\033[1;32m'; BRED='\033[1;31m'; BCYAN='\033[1;36m'
 TEMPROOT_BASE="/root/.temproot_sessions"
 LOG_FILE="/var/log/temproot.log"
 EXPIRE_HOURS=24
+# Remote syslog target for off-box forwarding (lifecycle log + command audit).
+# Leave SYSLOG_HOST empty to keep everything local.
+SYSLOG_HOST=""
+SYSLOG_PORT=514
 SCRIPT_PATH="$(realpath "$0")"
 # cron runs with PATH=/usr/bin:/bin, which hides useradd/userdel/chage/gpasswd
 # (they live in /usr/sbin). Force a full PATH so scheduled purges actually work.
@@ -36,7 +40,12 @@ banner() {
     echo -e "  ${DIM}─────────────────────────────────────────────────────────────────${NC}\n"
 }
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$1] ${*:2}" >> "$LOG_FILE" 2>/dev/null || true; }
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$1] ${*:2}" >> "$LOG_FILE" 2>/dev/null || true
+    if [[ -n "$SYSLOG_HOST" ]] && command -v logger &>/dev/null; then
+        logger -n "$SYSLOG_HOST" -P "$SYSLOG_PORT" -t temproot -p local0.info -- "[$1] ${*:2}" 2>/dev/null || true
+    fi
+}
 die()     { echo -e "${BRED}[ERROR]${NC} $*" >&2; log "ERROR" "$*"; exit 1; }
 info()    { echo -e "${CYAN}[INFO]${NC}  $*"; log "INFO"  "$*"; }
 success() { echo -e "${BGREEN}[ OK ]${NC}  $*"; log "OK"    "$*"; }
@@ -408,6 +417,28 @@ README
     chmod 644 "${session_dir}/README.txt"
 }
 
+# ── Command audit ────────────────────────────────────────────
+# Logs every command the session runs via PROMPT_COMMAND -> logger. Goes to
+# the local syslog/journal always, also forwarded off-box when SYSLOG_HOST is
+# set, alongside the lifecycle log in log(). Like every other local safeguard
+# here, the holder can edit their own .bashrc and stop it. What's logged up
+# to that point is already out. Cleaned up automatically: userdel -r removes
+# the home directory this lives in.
+install_cmd_logging() {
+    local username="$1" bashrc="/home/${1}/.bashrc" logger_cmd
+    if [[ -n "$SYSLOG_HOST" ]]; then
+        logger_cmd="logger -n ${SYSLOG_HOST} -P ${SYSLOG_PORT} -t temproot-cmd -p local0.info"
+    else
+        logger_cmd="logger -t temproot-cmd -p local0.info"
+    fi
+    cat >> "$bashrc" << CMDLOG
+
+# TEMPROOT command audit - do not remove
+PROMPT_COMMAND='${logger_cmd} -- "[\$(whoami)] \$(history 1 | sed "s/^[[:space:]]*[0-9]*[[:space:]]*//")"'
+CMDLOG
+    chown "${username}:${username}" "$bashrc"
+}
+
 # ── Create Account ────────────────────────────────────────────
 create_temp_account() {
     banner
@@ -441,6 +472,14 @@ create_temp_account() {
     echo "${username}:${password}" | chpasswd \
         || die "Failed to set password"
     success "User ${username} created"
+
+    step "Enabling command audit logging..."
+    if command -v logger &>/dev/null; then
+        install_cmd_logging "$username"
+        success "Command audit active ($( [[ -n "$SYSLOG_HOST" ]] && echo "forwarded to ${SYSLOG_HOST}:${SYSLOG_PORT}" || echo "local syslog only" ))"
+    else
+        warn "'logger' not found, command audit logging skipped"
+    fi
 
     # ── Grant root-equivalent sudo ─────────────────────────
     step "Granting root-equivalent sudo (NOPASSWD)..."

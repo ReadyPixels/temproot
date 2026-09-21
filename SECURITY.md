@@ -24,6 +24,10 @@ to keep this safe, what it deliberately doesn't do, and what you should do on yo
   `/root`, credential files and archives are mode 600.
 - **No secrets in logs.** `/var/log/temproot.log` records usernames, times and the server
   address. Never a password or passphrase.
+- **Command audit on every session.** Each account gets a `PROMPT_COMMAND` hook that logs
+  every command it runs via `logger`. Set `SYSLOG_HOST` (and `SYSLOG_PORT`) at the top of
+  the script and this, plus the create/purge/sweep log, forwards to a remote syslog
+  target. Leave it empty and both stay local only.
 
 ## What it deliberately doesn't do
 
@@ -42,6 +46,10 @@ These are trade-offs, not oversights. Know them before you hand a bundle to some
   someone undo local safeguards written with root. What it does defend against is the more
   common failure: you hand out root for a job and forget to revoke it once the work's done.
   Cleanup runs on its own timer whether or not anyone remembers to check.
+- **Command audit isn't tamper-proof either.** The `PROMPT_COMMAND` hook lives in the
+  account's own `.bashrc`, which the holder can edit or clear. What's already logged is
+  safe, especially once forwarded off-box, but nothing stops them silencing it partway
+  through the session.
 - **Password login over SSH works** for the account unless your `sshd_config` already
   disables it. If you want key-only access, set `PasswordAuthentication no` on the server.
 - **The optional zip uses classic zip encryption**, which is weak. Prefer the `.tar.gz`
