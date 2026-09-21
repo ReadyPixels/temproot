@@ -40,7 +40,7 @@ These are trade-offs, not oversights. Know them before you hand a bundle to some
   systemd timer, and sudoers drop-in all live inside the same root access the temp account
   holds. Anyone holding it removes the crontab line, cancels the `at` job, disables or masks
   the systemd timer, or edits the lock date directly. A systemd unit is no harder to undo
-  than a crontab line; `systemctl disable temproot-<user>.timer` takes one command. Nothing
+  than a crontab line. `systemctl disable temproot-<user>.timer` takes one command. Nothing
   here defends against a malicious holder undoing their own expiry, real root always lets
   someone undo local safeguards written with root. What it does defend against is the more
   common failure: you hand out root for a job and forget to revoke it once the work's done.
